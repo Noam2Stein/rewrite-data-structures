@@ -1,12 +1,12 @@
 use alloc::alloc::{alloc, handle_alloc_error};
 use core::{
     alloc::Layout,
-    mem::ManuallyDrop,
+    mem::{ManuallyDrop, MaybeUninit},
     ops::{Deref, DerefMut},
     ptr::{NonNull, drop_in_place, read},
 };
 
-pub struct Box<T>(
+pub struct Box<T: ?Sized>(
     /// # Safety
     ///
     /// This pointer must be convertable to a reference.
@@ -49,7 +49,44 @@ impl<T> Box<T> {
     }
 }
 
-impl<T> Deref for Box<T> {
+impl<T> Box<[T]> {
+    pub fn new_uninit_slice(len: usize) -> Box<[MaybeUninit<T>]> {
+        if size_of::<T>() == 0 || len == 0 {
+            // SAFETY: If `T` is a ZST, then a dangling pointer is always
+            // allowed. If `len` is zero, the slice pointer is convertable to a
+            // reference since the pointer metadata is zero as well. The
+            // dangling pointer is properly aligned.
+            Box(NonNull::<[MaybeUninit<T>]>::slice_from_raw_parts(
+                NonNull::<MaybeUninit<T>>::dangling(),
+                len,
+            ))
+        } else {
+            let Ok(layout) = Layout::array::<T>(len) else {
+                panic!("slice length exceeded `isize::MAX`");
+            };
+
+            // SAFETY: Since both `size_of::<T>()` and `len` are checked for
+            // zero, `layout` must have a non-zero size.
+            let ptr = unsafe { alloc(layout) };
+
+            let Some(ptr) = NonNull::new(ptr) else {
+                handle_alloc_error(layout);
+            };
+
+            let ptr = NonNull::<[MaybeUninit<T>]>::slice_from_raw_parts(
+                ptr.cast::<MaybeUninit<T>>(),
+                len,
+            );
+
+            // SAFETY: `ptr` points to an allocation of an appropriate layout,
+            // and `MaybeUninit` accepts potentially uninitialized memory. The
+            // pointer will not be freed until `self` is dropped.
+            Box::<[MaybeUninit<T>]>(ptr)
+        }
+    }
+}
+
+impl<T: ?Sized> Deref for Box<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -58,14 +95,14 @@ impl<T> Deref for Box<T> {
     }
 }
 
-impl<T> DerefMut for Box<T> {
+impl<T: ?Sized> DerefMut for Box<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: `self.0` is guaranteed to be convertable to a pointer
         unsafe { self.0.as_mut() }
     }
 }
 
-impl<T> Drop for Box<T> {
+impl<T: ?Sized> Drop for Box<T> {
     fn drop(&mut self) {
         // SAFETY: The pointer is convertable to a reference, we have exlusive
         // access, and it will never be used again
@@ -79,7 +116,10 @@ mod tests {
 
     const _: () = {
         assert!(size_of::<Box<i32>>() == size_of::<usize>());
+        assert!(size_of::<Option<Box<i32>>>() == size_of::<usize>());
         assert!(size_of::<Box<()>>() == size_of::<usize>());
+        assert!(size_of::<Box<str>>() == size_of::<usize>() * 2);
+        assert!(size_of::<Option<Box<str>>>() == size_of::<usize>() * 2);
     };
 
     #[test]
