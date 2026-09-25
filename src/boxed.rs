@@ -9,12 +9,17 @@ use core::{
 pub struct Box<T: ?Sized>(
     /// # Safety
     ///
-    /// This pointer must be convertable to a reference.
+    /// This pointer must be properly aligned for `T`, point to an entire
+    /// allocation from the global allocator, and point to an initialized value
+    /// of `T`.
     NonNull<T>,
 );
 
-impl<T> Box<T> {
-    pub fn new(value: T) -> Self {
+impl<T: ?Sized> Box<T> {
+    pub fn new(value: T) -> Self
+    where
+        T: Sized,
+    {
         let value = ManuallyDrop::new(value);
 
         if size_of::<T>() == 0 {
@@ -40,12 +45,30 @@ impl<T> Box<T> {
         }
     }
 
-    pub fn into_inner(boxed: Box<T>) -> T {
+    pub fn into_inner(boxed: Box<T>) -> T
+    where
+        T: Sized,
+    {
         let boxed = ManuallyDrop::new(boxed);
 
         // The pointer is guaranteed to be aligned, and we have exclusive access
         // to the pointed at value.
         unsafe { read(boxed.0.as_ptr()) }
+    }
+
+    pub fn into_raw(boxed: Box<T>) -> NonNull<T> {
+        let boxed = ManuallyDrop::new(boxed);
+        boxed.0
+    }
+
+    /// # Safety
+    ///
+    /// `raw` must be properly aligned for `T`, point to an entire allocation
+    /// from the global allocator, and point to an initialized value of `T`.
+    ///
+    /// `raw` must not be used after it is passed to this function.
+    pub unsafe fn from_raw(raw: NonNull<T>) -> Box<T> {
+        Box::<T>(raw)
     }
 }
 
